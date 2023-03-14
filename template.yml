@@ -1,0 +1,326 @@
+# This template deploys the entire backend.
+# Make sure that corresponding deployment .zip archives 
+# for Lambda functions are present before deployment
+
+AWSTemplateFormatVersion: '2010-09-09'
+Resources:
+# DYNAMODB SECTION ----------------------------------------------------------------------------
+
+  ChallengePostsTable:
+    Type: 'AWS::DynamoDB::Table'
+    Properties:
+      TableName: 'challenge_posts'
+      AttributeDefinitions:
+        - AttributeName: 'PostID'
+          AttributeType: 'S'
+        - AttributeName: 'Timestamp'
+          AttributeType: 'N'
+        - AttributeName: 'Status'
+          AttributeType: 'S'
+        - AttributeName: 'CommentCount'
+          AttributeType: 'N'
+      KeySchema:
+        - AttributeName: 'PostID'
+          KeyType: 'HASH'
+        - AttributeName: 'Timestamp'
+          KeyType: 'RANGE'
+      BillingMode: 'PAY_PER_REQUEST'
+      GlobalSecondaryIndexes:
+      # This index is used for fetching posts ordered by the comment count
+        - IndexName: 'Status-CommentCount-index'
+          KeySchema:
+            - AttributeName: 'Status'
+              KeyType: 'HASH'
+            - AttributeName: 'CommentCount'
+              KeyType: 'RANGE'
+          Projection:
+            ProjectionType: 'ALL'
+
+  ChallengeCommentsTable:
+    Type: 'AWS::DynamoDB::Table'
+    Properties:
+      TableName: 'challenge_comments'
+      AttributeDefinitions:
+        - AttributeName: 'CommentID'
+          AttributeType: 'S'
+        - AttributeName: 'Timestamp'
+          AttributeType: 'N'
+        - AttributeName: 'PostID'
+          AttributeType: 'S'
+      KeySchema:
+        - AttributeName: 'CommentID'
+          KeyType: 'HASH'
+        - AttributeName: 'Timestamp'
+          KeyType: 'RANGE'
+      BillingMode: 'PAY_PER_REQUEST'
+      GlobalSecondaryIndexes:
+      # This index is used to fetch last two comments for any given post
+        - IndexName: 'PostID-Timestamp-index'
+          KeySchema:
+            - AttributeName: 'PostID'
+              KeyType: 'HASH'
+            - AttributeName: 'Timestamp'
+              KeyType: 'RANGE'
+          Projection:
+            ProjectionType: 'ALL'
+
+# S3 SECTION ----------------------------------------------------------------------------
+
+  ChallengeImagesBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: akhomchanka-challenge-images
+
+# IAM SECTION ----------------------------------------------------------------------------
+
+  # This role is used by all Lambda functions. It permits too much, production or 
+  # even proper dev setup would limit allowed operations to a small subset
+  ExecutionRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Path: '/'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/AmazonDynamoDBFullAccess'
+        - 'arn:aws:iam::aws:policy/AmazonS3FullAccess'
+        - 'arn:aws:iam::aws:policy/CloudWatchLogsFullAccess'
+
+# LAMBDA SECTION ----------------------------------------------------------------------------
+
+  # The Lambda function for adding new posts
+  ChallengePostsPostFunction:
+    Type: 'AWS::Lambda::Function'
+    DependsOn: ExecutionRole
+    Properties:
+      Code:
+        S3Bucket: akomchanka-bandlab-challenge-functions
+        S3Key: challenge-posts-post.zip
+      FunctionName: challenge-posts-post
+      Handler: lambda_function.lambda_handler
+      Role: !GetAtt ExecutionRole.Arn
+      Runtime: python3.9
+      Timeout: 10
+
+  # The Lambda function for adding new comments to posts
+  ChallengePostsPostIDCommentsPostFunction:
+    Type: 'AWS::Lambda::Function'
+    DependsOn: ExecutionRole
+    Properties:
+      Code:
+        S3Bucket: akomchanka-bandlab-challenge-functions
+        S3Key: challenge-posts_postid_comments-post.zip
+      FunctionName: challenge-posts_postid_comments-post
+      Handler: lambda_function.lambda_handler
+      Role: !GetAtt ExecutionRole.Arn
+      Runtime: python3.9
+      Timeout: 10
+
+  # The Lambda function for getting latest posts
+  ChallengePostsGetFunction:
+    Type: 'AWS::Lambda::Function'
+    DependsOn: ExecutionRole
+    Properties:
+      Code:
+        S3Bucket: akomchanka-bandlab-challenge-functions
+        S3Key: challenge-posts-get.zip
+      FunctionName: challenge-posts-get
+      Handler: lambda_function.lambda_handler
+      Role: !GetAtt ExecutionRole.Arn
+      Runtime: python3.9
+      Timeout: 10
+
+  # The Lambda function for deleting a given comment on a given post
+  ChallengePostsPostIDCommentsCommentIDDeleteFunction:
+    Type: 'AWS::Lambda::Function'
+    DependsOn: ExecutionRole
+    Properties:
+      Code:
+        S3Bucket: akomchanka-bandlab-challenge-functions
+        S3Key: challenge-posts_postid_comments_commentid-delete.zip
+      FunctionName: challenge-posts_postid_comments_commentid-delete
+      Handler: lambda_function.lambda_handler
+      Role: !GetAtt ExecutionRole.Arn
+      Runtime: python3.9
+      Timeout: 10
+
+# API GATEWAY SECTION ----------------------------------------------------------------------------
+
+  ChallengeHttpApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: ChallengeHttpApi
+      ProtocolType: HTTP
+      CorsConfiguration:
+        AllowOrigins:
+          - '*'
+        AllowMethods:
+          - GET
+          - POST
+          - DELETE
+  
+  # Integrations
+  PostsPostIntegration:
+    Type: 'AWS::ApiGatewayV2::Integration'
+    DependsOn:
+      - ChallengeHttpApi
+      - ChallengePostsPostFunction
+    Properties:
+      ApiId: !Ref ChallengeHttpApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ChallengePostsPostFunction.Arn}/invocations'
+      PayloadFormatVersion: '2.0'
+      IntegrationMethod: POST
+  
+  PostsGetIntegration:
+    Type: 'AWS::ApiGatewayV2::Integration'
+    DependsOn:
+      - ChallengeHttpApi
+      - ChallengePostsGetFunction
+    Properties:
+      ApiId: !Ref ChallengeHttpApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ChallengePostsGetFunction.Arn}/invocations'
+      PayloadFormatVersion: '2.0'
+      IntegrationMethod: POST
+  
+  CommentsPostIntegration:
+    Type: 'AWS::ApiGatewayV2::Integration'
+    DependsOn:
+      - ChallengeHttpApi
+      - ChallengePostsPostIDCommentsPostFunction
+    Properties:
+      ApiId: !Ref ChallengeHttpApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ChallengePostsPostIDCommentsPostFunction.Arn}/invocations'
+      PayloadFormatVersion: '2.0'
+      IntegrationMethod: POST
+  
+  CommentsDeleteIntegration:
+    Type: 'AWS::ApiGatewayV2::Integration'
+    DependsOn:
+      - ChallengeHttpApi
+      - ChallengePostsPostIDCommentsCommentIDDeleteFunction
+    Properties:
+      ApiId: !Ref ChallengeHttpApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ChallengePostsPostIDCommentsCommentIDDeleteFunction.Arn}/invocations'
+      PayloadFormatVersion: '2.0'
+      IntegrationMethod: POST
+
+  # Routes
+  PostsGetRoute:
+    Type: AWS::ApiGatewayV2::Route
+    DependsOn:
+      - ChallengeHttpApi
+      - PostsGetIntegration
+    Properties:
+      ApiId: !Ref ChallengeHttpApi
+      RouteKey: GET /posts
+      Target: !Join
+        - '/'
+        - - integrations
+          - !Ref PostsGetIntegration
+      AuthorizationType: NONE
+
+  PostsPostRoute:
+    Type: AWS::ApiGatewayV2::Route
+    DependsOn:
+      - ChallengeHttpApi
+      - PostsPostIntegration
+    Properties:
+      ApiId: !Ref ChallengeHttpApi
+      RouteKey: POST /posts
+      Target: !Join
+        - '/'
+        - - integrations
+          - !Ref PostsPostIntegration
+      AuthorizationType: NONE
+
+  CommentsPostRoute:
+    Type: AWS::ApiGatewayV2::Route
+    DependsOn:
+      - ChallengeHttpApi
+      - CommentsPostIntegration
+    Properties:
+      ApiId: !Ref ChallengeHttpApi
+      RouteKey: POST /posts/{post_id}/comments
+      Target: !Join
+        - '/'
+        - - integrations
+          - !Ref CommentsPostIntegration
+      AuthorizationType: NONE
+
+  CommentsDeleteRoute:
+    Type: AWS::ApiGatewayV2::Route
+    DependsOn:
+      - ChallengeHttpApi
+      - CommentsDeleteIntegration
+    Properties:
+      ApiId: !Ref ChallengeHttpApi
+      RouteKey: DELETE /posts/{post_id}/comments/{comment_id}
+      Target: !Join
+        - '/'
+        - - integrations
+          - !Ref CommentsDeleteIntegration
+      AuthorizationType: NONE
+    
+  # Invocation permissions
+  ChallengePostsPostFunctionInvokePermission:
+    Type: AWS::Lambda::Permission
+    DependsOn: 
+      - ChallengeHttpApi
+      - ChallengePostsPostFunction
+    Properties:
+      FunctionName: !Ref ChallengePostsPostFunction
+      Action: "lambda:InvokeFunction"
+      Principal: apigateway.amazonaws.com  
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ChallengeHttpApi}/*'
+  
+  ChallengePostsPostIDCommentsPostFunctionInvokePermission:
+    Type: AWS::Lambda::Permission
+    DependsOn: 
+      - ChallengeHttpApi
+      - ChallengePostsPostIDCommentsPostFunction
+    Properties:
+      FunctionName: !Ref ChallengePostsPostIDCommentsPostFunction
+      Action: "lambda:InvokeFunction"
+      Principal: apigateway.amazonaws.com
+
+  ChallengePostsGetFunctionInvokePermission:
+    Type: AWS::Lambda::Permission
+    DependsOn: 
+      - ChallengeHttpApi
+      - ChallengePostsGetFunction
+    Properties:
+      FunctionName: !Ref ChallengePostsGetFunction
+      Action: "lambda:InvokeFunction"
+      Principal: apigateway.amazonaws.com
+  
+  ChallengePostsPostIDCommentsCommentIDDeleteFunctionInvokePermission:
+    Type: AWS::Lambda::Permission
+    DependsOn: 
+      - ChallengeHttpApi
+      - ChallengePostsPostIDCommentsCommentIDDeleteFunction
+    Properties:
+      FunctionName: !Ref ChallengePostsPostIDCommentsCommentIDDeleteFunction
+      Action: "lambda:InvokeFunction"
+      Principal: apigateway.amazonaws.com
+
+  # Stages
+  ApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    DependsOn: ChallengeHttpApi
+    Properties:
+      StageName: $default
+      AutoDeploy: true
+      ApiId: !Ref ChallengeHttpApi 
+
+Outputs:
+  ApiUrl:
+    Value: !Sub 'https://${ChallengeHttpApi}.execute-api.${AWS::Region}.amazonaws.com'
