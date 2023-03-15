@@ -326,6 +326,10 @@ As you may notice, there is the "Status" field in the posts table that is always
 
 ## **Things missing in the current state of the repository**
 
+### A NOTE AFTER SUBMISSION: An error in the optimistic locking mechanism
+
+I have overlooked one crucial part of the lockig mechanism when posting new comments. When a write is rejected, it should also fetch the latest version of the existing record and increment the version from it, not just increment it by 1 from the existing record with the outdated CommentCount value. I've only realized that after submitting.
+
 ### Unit tests
 
 Function code in this case doesn't do much aside from forwarding inputs to databases/buckets or querying said databases/buckets without doing much transformation on the data itself aside from simple type casting or incrementing/decrementing values. At this scale there isn't really anything that warrants unit testing. Testing calls of individual calls or different resource functions in boto3 would pretty much devolve into defining a bunch of mocks and checking that those mocks always return correct values (which they always will due to the very nature of mocks).
